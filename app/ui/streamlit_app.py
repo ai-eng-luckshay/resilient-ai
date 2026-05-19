@@ -26,6 +26,8 @@ import uuid
 import httpx
 import streamlit as st
 
+from app.a2a.ui_helpers import a2a_extract_text, a2a_state_badge
+
 API_BASE = "http://localhost:8000"
 
 # Separate connect vs read timeouts: connect fails fast if API is down,
@@ -411,27 +413,10 @@ with tab_chat:
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 2 — A2A INSPECTOR
 # ═══════════════════════════════════════════════════════════════════════════
-def _a2a_extract_text(task_result: dict) -> str:
-    """Extract full reply text from an A2A SDK task result dict."""
-    parts_text: list[str] = []
-    for artifact in task_result.get("artifacts", []):
-        for part in artifact.get("parts", []):
-            if isinstance(part, dict):
-                # SDK format: {"text": "..."} or {"text": {"text": "..."}}
-                text_val = part.get("text", "")
-                if isinstance(text_val, dict):
-                    text_val = text_val.get("text", "")
-                if text_val:
-                    parts_text.append(str(text_val))
-    return " ".join(parts_text).strip()
-
-
-def _a2a_state_badge(state_raw: str) -> tuple[str, str]:
-    """Return (emoji, normalised_label) for a task state string."""
-    # SDK emits 'TASK_STATE_COMPLETED' etc.; normalise for display
-    s = state_raw.lower().replace("task_state_", "")
-    emoji = {"completed": "🟢", "working": "🟡", "failed": "🔴"}.get(s, "⚪")
-    return emoji, s.upper()
+# Thin aliases so the rest of the file keeps its _private names.
+# Logic lives in app/a2a/ui_helpers.py for testability.
+_a2a_extract_text = a2a_extract_text
+_a2a_state_badge = a2a_state_badge
 
 
 with tab_a2a:

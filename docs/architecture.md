@@ -8,7 +8,7 @@ The master model catalog lives in code (`app/agent/agent_util.py`). The environm
 
 ```python
 llm_provider_map = {
-    "GEMINI_31_FLASH_LITE": "GG_gemini-3.1-flash-lite",  # default — thinking model, tools work via thought_signature round-trip in langchain-google-genai 3.x
+    "GEMINI_31_FLASH_LITE": "GG_gemini-3.1-flash-lite",  # default — thinking model; langchain-google-genai 3.x preserves thought_signatures
     "GPT4O_MINI":           "O_gpt-4o-mini",
     "GEMINI_FLASH":         "GG_gemini-flash-latest",
     "GEMINI_25_FLASH":      "GG_gemini-2.5-flash",
@@ -45,6 +45,35 @@ The full failover chain is built at request time — no `LLM_PROVIDER_CHAIN` var
 ```
 
 On any LLM error, `LangGraphProcessor` catches the exception, emits a `FAILOVER` SSE chunk, and retries with the next provider. If all fail, an `ERROR` chunk is returned.
+
+---
+
+## Dynamic Tool Binding & MCP Extension
+
+Tools are bound to the LLM **inside `agent_node`, at request time** — not when the graph is compiled at startup:
+
+```python
+# gateway_agent_builder.py — runs per-request
+async def agent_node(state: GraphFlowState) -> dict:
+    llm = middleware.resolve_model(state)      # model resolved per-request
+    llm_with_tools = llm.bind_tools(tools)    # tools bound per-request
+    response = await llm_with_tools.ainvoke(state["messages"])
+    return {"messages": [response]}
+```
+
+The `StateGraph` topology is compiled once at startup and never changes. The tool set is the only variable — a fresh binding on every call.
+
+**Current behaviour:** `agent_node` uses the static `ALL_TOOLS` list from `app/tools/assistant_tools.py`. The four built-in tools (`calculate`, `get_weather`, `search_knowledge_base`, `summarize_text`) are bound on every request.
+
+**MCP extension point:** `GraphFlowState` reserves an `llm_tools` field for per-request tool injection:
+
+```python
+class GraphFlowState(TypedDict):
+    ...
+    llm_tools: list[Any]   # injection point — replace ALL_TOOLS with MCP-fetched tools
+```
+
+MCP integration is designed to plug in here. An MCP-aware implementation fetches the live tool manifest from one or more MCP servers at request time (or from a per-session cache), wraps each entry as a LangChain `@tool`, and populates `state["llm_tools"]`. `agent_node` then calls `llm.bind_tools(state["llm_tools"])` with the live set instead of the static list. Because binding happens inside the node — not at compile time — **zero graph recompilation is required**. The change is entirely local to `agent_node` in `gateway_agent_builder.py`.
 
 ---
 
@@ -169,7 +198,7 @@ The A2A surface (`app/a2a/`) uses the official **`a2a-sdk 1.0.3`** package. The 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/agent/a2a` | Agent card — capability descriptor for peer agent discovery |
-| `POST` | `/agent/a2a` | JSON-RPC 2.0 dispatcher (`message/send`, `tasks/get`, `tasks/cancel`) |
+| `POST` | `/agent/a2a` | JSON-RPC 2.0 dispatcher (`SendMessage`, `GetTask`, `CancelTask`) |
 
 ### Component roles
 
@@ -179,6 +208,7 @@ The A2A surface (`app/a2a/`) uses the official **`a2a-sdk 1.0.3`** package. The 
 | `app/a2a/executor.py` | `ResilientAgentExecutor(AgentExecutor)` — bridges A2A tasks to `LangGraphProcessor` |
 | `app/a2a/context_store.py` | `context_id → session_id` binding — survives multi-turn A2A conversations |
 | `app/a2a/task_store.py` | Custom `InMemoryTaskStore` kept for the Redis swap path; SDK's `InMemoryTaskStore` is used by default |
+| `app/a2a/ui_helpers.py` | Pure result-extraction helpers (`a2a_extract_text`, `a2a_state_badge`) — no Streamlit dependency, fully unit-tested |
 
 ### SDK integration pattern
 

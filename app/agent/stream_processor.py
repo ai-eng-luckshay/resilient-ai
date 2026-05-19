@@ -118,7 +118,8 @@ class StreamProcessor:
             if isinstance(msg, AIMessageChunk) and msg.content:
                 content = _extract_text(msg.content)
                 if self._settings.stream_mode == "RAW":
-                    yield _ndjson("TEXT", content)
+                    if content:
+                        yield _ndjson("TEXT", content)
                 else:
                     async for chunk in self._buffer_sentence(content, sentence_buffer):
                         yield chunk

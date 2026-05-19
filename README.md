@@ -23,7 +23,7 @@ This gateway solves all three.
                  │                                             │
   REST Client ──►│  POST /v1/stream      ┐                    │
                  │  POST /v1/chat        ├─► ProcessorFactory  │
-  A2A Agent  ──►│  POST /agent/a2a/...  ┘       │             │
+  A2A Agent  ──►│  POST /agent/a2a      ┘       │             │
                  │                               ▼             │
                  │                    LangGraphProcessor       │
                  │                         │         │         │
@@ -34,7 +34,8 @@ This gateway solves all three.
                  │                    ┌────┴────┐              │
                  │                  agent     tools            │
                  │                    └────┬────┘              │
-                 │                         └── 4 generic tools │
+                 │              dynamic tool binding           │
+                 │           (MCP-extensible at runtime)       │
                  └─────────────────────────────────────────────┘
 ```
 
@@ -42,12 +43,12 @@ This gateway solves all three.
 
 | Concern | Approach | Tradeoff |
 |---|---|---|
-| Tool discovery | Bound per-request, not at startup | Flexibility over ~0ms compile latency |
-| LLM resilience | 2-provider failover chain (OpenAI → Gemini) | Simplicity over circuit breaker |
+| Tool discovery | Bound per-request inside `agent_node`, not at startup | Enables runtime MCP tool injection without graph recompilation |
+| LLM resilience | Full failover chain — preferred provider first, then all others in map order | Automatic recovery over manual circuit breaker |
 | Streaming | Sentence-buffered NDJSON (SSE) | Voice-friendly completeness over minimum latency |
-| Multi-surface | Same processor for REST + A2A | Zero logic duplication |
-| Session store | In-memory with TTL | Zero deps for demo; swap to Redis in one line |
-| Extensibility | Processor registry (Factory + Strategy) | Open/Closed Principle |
+| Multi-surface | Same LangGraph processor for REST + A2A | Zero logic duplication across protocols |
+| Session store | In-memory with TTL | Zero deps for demo; swap to Redis with one env flag |
+| Extensibility | Processor registry (Factory + Strategy) | Open/Closed Principle — add backends without touching callers |
 
 ---
 
@@ -56,7 +57,7 @@ This gateway solves all three.
 ### Requirements
 
 - Python 3.11 or higher
-- An OpenAI API key (or Gemini API key for failover)
+- A Gemini API key and/or an OpenAI API key
 
 ### Run
 
@@ -106,9 +107,8 @@ To stop everything:
 | `POST` | `/v1/session/init` | Create a new chat session |
 | `POST` | `/v1/stream` | SSE streaming chat |
 | `POST` | `/v1/chat` | Non-streaming chat |
-| `POST` | `/agent/a2a/tasks/send` | A2A JSON-RPC 2.0 task submission |
-| `GET` | `/agent/a2a/tasks/{id}` | Poll A2A task state + artifacts |
-| `GET` | `/agent/a2a/agent-card` | Agent capability descriptor |
+| `GET` | `/agent/a2a` | Agent card — capability descriptor for peer agent discovery |
+| `POST` | `/agent/a2a` | A2A JSON-RPC 2.0 dispatcher (`SendMessage`, `GetTask`, `CancelTask`) |
 | `GET` | `/health` | Health check |
 | `GET` | `/metrics` | Live metrics snapshot |
 | `GET` | `/docs` | Interactive API docs (Swagger UI) |
@@ -148,7 +148,7 @@ The model catalog is a static Python dict in `app/agent/agent_util.py`. The env 
 
 | Key | Provider | Model |
 |---|---|---|
-| `GEMINI_31_FLASH_LITE` | Google GenAI | `gemini-3.1-flash-lite-preview` |
+| `GEMINI_31_FLASH_LITE` | Google GenAI | `gemini-3.1-flash-lite` *(default — thinking model)* |
 | `GPT4O_MINI` | OpenAI | `gpt-4o-mini` |
 | `GEMINI_FLASH` | Google GenAI | `gemini-flash-latest` |
 | `GEMINI_25_FLASH` | Google GenAI | `gemini-2.5-flash` |
@@ -158,15 +158,25 @@ To add a model: add one line to `llm_provider_map` in `agent_util.py`. To activa
 ### Provider selection (`.env`)
 
 ```dotenv
-# Set preferred provider — moved to the front of the failover chain:
-SELECTED_LLM_PROVIDER=GPT4O_MINI
+# Set preferred provider — placed first in the failover chain:
+SELECTED_LLM_PROVIDER=GEMINI_31_FLASH_LITE
 ```
 
 ### Runtime failover
 
 The full provider chain is built automatically at request time: preferred first, then all other registered providers in map order. On any LLM error (rate limit, auth failure, API error), `LangGraphProcessor` retries with the next provider and emits a `FAILOVER` SSE chunk. The Streamlit chat tab shows a yellow **⚡ Failover** badge when this occurs.
 
-To demo: set `OPENAI_API_KEY=invalid` in `.env`, restart, send a message — the gateway switches to Gemini and the badge appears.
+To demo: set `GEMINI_API_KEY=invalid` in `.env`, restart, send a message — the gateway switches to the next provider and the badge appears.
+
+---
+
+## Dynamic Tool Binding
+
+Tools are bound to the LLM **at request time** inside `agent_node` — not when the graph is compiled at startup. The `StateGraph` topology is fixed; only the tool set varies per request.
+
+**Current behaviour:** the four built-in tools (`calculate`, `get_weather`, `search_knowledge_base`, `summarize_text`) from `ALL_TOOLS` are bound on every call.
+
+**MCP extension point:** `GraphFlowState` carries an `llm_tools` field specifically for per-request tool injection. An MCP-aware implementation fetches the live tool manifest from MCP servers at request time, wraps each as a LangChain `@tool`, and passes them through state — `agent_node` then calls `llm.bind_tools(state["llm_tools"])` with the live set. No graph recompilation is needed; the extension is entirely local to `agent_node` in `gateway_agent_builder.py`.
 
 ---
 
@@ -175,18 +185,22 @@ To demo: set `OPENAI_API_KEY=invalid` in `.env`, restart, send a message — the
 ```
 app/
 ├── agent/
-│   ├── graph_builder.py        # LangGraph StateGraph + GraphFlowState
+│   ├── agent_util.py           # Master LLM provider map
+│   ├── graph_builder.py        # GraphFlowState schema
+│   ├── gateway_agent_builder.py# LangGraph StateGraph + dynamic tool binding
+│   ├── base_agent_builder.py   # ABC for agent builders
 │   ├── llm_registry.py         # Multi-provider registry + failover chain
 │   ├── runner.py               # AgentRunner: invoke() + stream()
 │   ├── stream_processor.py     # NDJSON pipeline + sentence buffer
-│   ├── middleware/             # LangChain callback handler
-│   └── processors/             # Strategy pattern: LANGGRAPH | ADK | A2A
+│   ├── middleware/             # GatewayAgentMiddleware (model resolution + tool hooks)
+│   └── processors/             # Strategy pattern: LANGGRAPH | GOOGLE_ADK
 ├── a2a/
-│   ├── server.py               # JSON-RPC 2.0 router
+│   ├── server.py               # JSON-RPC 2.0 router (a2a-sdk 1.0.3)
 │   ├── executor.py             # A2A task → LangGraph stream bridge
-│   ├── context_store.py        # context_id → session_id binding
-│   └── task_store.py           # In-memory task state
-├── tools/                      # 4 generic tools with InjectedState
+│   ├── context_store.py        # context_id → session_id binding (multi-turn)
+│   ├── task_store.py           # In-memory task state (Redis swap path)
+│   └── ui_helpers.py           # Pure result-extraction helpers (testable)
+├── tools/                      # 4 generic tools (calculate, weather, search, summarize)
 ├── services/                   # Session store + chat history
 ├── controllers/                # REST API routes
 ├── middleware/                 # Logger + PII filter
@@ -194,7 +208,7 @@ app/
 ├── models/                     # Pydantic schemas
 └── ui/                         # Streamlit dashboard
 tests/
-└── unit/                       # Unit tests
+└── unit/                       # Unit tests (stream processor, registry, session, A2A)
 ```
 
 ---
@@ -214,10 +228,11 @@ tests/
 
 | Layer | Technology |
 |---|---|
-| Agent orchestration | LangGraph 1.0, LangChain 0.3 |
+| Agent orchestration | LangGraph 1.2, LangChain 1.3 |
 | API backend | FastAPI 0.116, Uvicorn 0.47 |
-| LLM (primary) | OpenAI gpt-4o-mini |
-| LLM (failover) | Google gemini-flash-latest |
+| LLM (default) | Google `gemini-3.1-flash-lite` (thinking model) |
+| LLM (failover) | OpenAI `gpt-4o-mini`, `gemini-flash-latest`, `gemini-2.5-flash` |
+| A2A protocol | `a2a-sdk 1.0.3` (JSON-RPC 2.0, proto-based) |
 | Frontend | Streamlit 1.57 |
 | Config | Pydantic v2 BaseSettings |
 | Observability | contextvars trace IDs, in-process metrics, structured logging |
