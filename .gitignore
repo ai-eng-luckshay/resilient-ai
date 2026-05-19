@@ -1,0 +1,7 @@
+.claude/
+.pytest_cache/
+.venv/
+.vscode/
+*.egg-info/
+logs/
+__pycache__
