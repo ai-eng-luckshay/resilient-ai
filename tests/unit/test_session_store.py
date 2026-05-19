@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.services.session_store import SessionStore
+from app.repositories.memory.session_repository import SessionStore
 
 
 class TestSessionCreate:
@@ -48,7 +48,7 @@ class TestSessionExpiry:
         store = SessionStore(ttl_seconds=1)
         sid = store.create()
         # Fast-forward time
-        with patch("app.services.session_store.time") as mock_time:
+        with patch("app.repositories.memory.session_repository.time") as mock_time:
             mock_time.time.return_value = time.time() + 10
             result = store.get(sid)
         assert result is None
@@ -57,7 +57,7 @@ class TestSessionExpiry:
         store = SessionStore(ttl_seconds=1)
         store.create()
         store.create()
-        with patch("app.services.session_store.time") as mock_time:
+        with patch("app.repositories.memory.session_repository.time") as mock_time:
             mock_time.time.return_value = time.time() + 10
             count = store.active_count()
         assert count == 0

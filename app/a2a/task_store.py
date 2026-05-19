@@ -78,6 +78,6 @@ def get_task_store() -> InMemoryTaskStore:
         # submission; a process restart between submit and poll returns 404 with
         # the in-memory store.  Redis survives restarts and works across workers.
         # See app/infra/redis_store.py — RedisTaskStore implements the same interface.
-        from app.infra.redis_store import RedisTaskStore
+        from app.repositories.redis.task_repository import RedisTaskStore
         return RedisTaskStore()  # type: ignore[return-value]
     return InMemoryTaskStore()

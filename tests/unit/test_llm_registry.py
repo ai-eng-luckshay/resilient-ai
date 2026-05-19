@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.agent.llm_registry import LLMRegistry
+from app.agent.registry.llm_registry import LLMRegistry
 
 
 class TestLLMRegistryGet:

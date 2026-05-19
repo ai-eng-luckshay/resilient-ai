@@ -15,14 +15,14 @@ import json
 import logging
 from typing import AsyncIterator
 
-from app.agent.agent_util import llm_provider_map
-from app.agent.runner import AgentRunnerManager
-from app.agent.stream_processor import StreamProcessor
-from app.agent.processors.base import BaseProcessor
-from app.config.logger import get_trace_id
+from app.agent.config.provider_catalog import llm_provider_map
+from app.agent.runner.runner_manager import AgentRunnerManager
+from app.agent.streaming.stream_processor import StreamProcessor
+from app.agent.processors.base_processor import BaseProcessor
+from app.config.logging_config import get_trace_id
 from app.config.metrics import get_metrics
 from app.config.settings import get_settings
-from app.agent.llm_registry import get_llm_registry
+from app.agent.registry.llm_registry import get_llm_registry
 from app.models.schemas import ChatRequest, RequestContext
 
 logger = logging.getLogger(__name__)

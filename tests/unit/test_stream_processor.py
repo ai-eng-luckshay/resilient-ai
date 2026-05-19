@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.agent.stream_processor import StreamProcessor, _ndjson, _extract_text
+from app.agent.streaming.stream_processor import StreamProcessor
+from app.agent.streaming.chunk import _ndjson, _extract_text
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -111,7 +112,7 @@ class TestStreamProcessorBuffered:
 
     @pytest.fixture
     def processor(self):
-        with patch("app.agent.stream_processor.get_settings") as mock_settings:
+        with patch("app.agent.streaming.stream_processor.get_settings") as mock_settings:
             mock_settings.return_value.stream_mode = "BUFFERED"
             yield StreamProcessor()
 
@@ -191,7 +192,7 @@ class TestStreamProcessorRaw:
 
     @pytest.fixture
     def processor(self):
-        with patch("app.agent.stream_processor.get_settings") as mock_settings:
+        with patch("app.agent.streaming.stream_processor.get_settings") as mock_settings:
             mock_settings.return_value.stream_mode = "RAW"
             yield StreamProcessor()
 
@@ -252,7 +253,7 @@ class TestLangGraph1xTupleEvents:
 
     @pytest.fixture
     def processor(self):
-        with patch("app.agent.stream_processor.get_settings") as mock_settings:
+        with patch("app.agent.streaming.stream_processor.get_settings") as mock_settings:
             mock_settings.return_value.stream_mode = "RAW"
             yield StreamProcessor()
 
@@ -294,7 +295,7 @@ class TestSentenceBuffering:
     """Unit tests for the sentence boundary splitting logic."""
 
     def test_splits_on_period(self):
-        from app.agent.stream_processor import _SENTENCE_BOUNDARY
+        from app.agent.streaming.chunk import _SENTENCE_BOUNDARY
 
         text = "First sentence. Second sentence. Third."
         parts = _SENTENCE_BOUNDARY.split(text)
@@ -302,7 +303,7 @@ class TestSentenceBuffering:
         assert "First sentence." in parts[0]
 
     def test_no_split_mid_sentence(self):
-        from app.agent.stream_processor import _SENTENCE_BOUNDARY
+        from app.agent.streaming.chunk import _SENTENCE_BOUNDARY
 
         text = "This has no terminal punctuation yet"
         parts = _SENTENCE_BOUNDARY.split(text)

@@ -12,9 +12,9 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.config.logger import get_trace_id
+from app.config.logging_config import get_trace_id
 from app.config.metrics import get_metrics
-from app.services.session_store import get_session_store
+from app.repositories.memory.session_repository import get_session_store
 
 logger = logging.getLogger(__name__)
 

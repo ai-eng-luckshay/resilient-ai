@@ -27,9 +27,9 @@ from a2a.server.events.event_queue_v2 import EventQueue
 from a2a.server.tasks.task_updater import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
 
-from app.a2a.context_store import get_context_store
-from app.agent.processor_factory import get_processor
-from app.config.logger import get_trace_id, set_trace_id
+from app.repositories.memory.context_repository import get_context_store
+from app.agent.processors.processor_factory import get_processor
+from app.config.logging_config import get_trace_id, set_trace_id
 from app.config.metrics import get_metrics
 from app.config.settings import get_settings
 from app.models.schemas import ChatRequest

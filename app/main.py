@@ -22,18 +22,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.a2a.server import router as a2a_router
-from app.agent.llm_registry import get_llm_registry
-from app.agent.runner import AgentRunnerManager
-from app.config.logger import (
+from app.agent.registry.llm_registry import get_llm_registry
+from app.agent.runner.runner_manager import AgentRunnerManager
+from app.config.logging_config import (
     configure_logging,
     get_logger,
     start_logging_listener,
     stop_logging_listener,
 )
 from app.config.settings import get_settings
-from app.controllers.agent_controller import router as agent_router
-from app.controllers.health_controller import router as health_router
-from app.middleware.logger_middleware import LoggerMiddleware
+from app.api.v1.chat_router import router as agent_router
+from app.api.v1.health_router import router as health_router
+from app.api.middleware.logging_middleware import LoggerMiddleware
 
 logger = get_logger(__name__)
 

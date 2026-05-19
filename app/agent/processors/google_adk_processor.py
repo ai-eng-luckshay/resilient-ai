@@ -33,8 +33,8 @@ import json
 import logging
 from typing import AsyncIterator
 
-from app.agent.processors.base import BaseProcessor
-from app.config.logger import get_trace_id
+from app.agent.processors.base_processor import BaseProcessor
+from app.config.logging_config import get_trace_id
 from app.models.schemas import ChatRequest
 
 logger = logging.getLogger(__name__)
