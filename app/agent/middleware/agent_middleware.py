@@ -1,11 +1,11 @@
 """
-GatewayAgentMiddleware — intercepts model calls and tool calls inside the
+ResilientAgentMiddleware — intercepts model calls and tool calls inside the
 LangGraph workflow.
 
 Mirrors SYWAgentMiddleware from the parent project.  Because LangGraph 1.0.x
 does not expose a middleware= parameter on create_react_agent, the middleware
 is injected directly into the agent_node and tool_node closures inside
-GatewayAgentBuilder._create_workflow().  The effect is identical — every
+ResilientAgentBuilder._create_workflow().  The effect is identical — every
 model resolution and every tool invocation passes through this class.
 
 Responsibilities
@@ -38,7 +38,7 @@ from app.models.schemas import RequestContext
 logger = logging.getLogger(__name__)
 
 
-class GatewayAgentMiddleware:
+class ResilientAgentMiddleware:
     """
     Stateless middleware injected into the compiled LangGraph workflow.
 

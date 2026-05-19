@@ -1,5 +1,5 @@
 """
-GatewayAgentBuilder — concrete LangGraph workflow builder.
+ResilientAgentBuilder — concrete LangGraph workflow builder.
 
 Workflow: START → agent_node → tools_condition → tool_node → agent_node → … → END
 
@@ -14,7 +14,7 @@ from langgraph.prebuilt import tools_condition
 
 from app.agent.base_agent_builder import BaseAgentBuilder
 from app.agent.graph_builder import GraphFlowState
-from app.agent.middleware.agent_middleware import GatewayAgentMiddleware
+from app.agent.middleware.agent_middleware import ResilientAgentMiddleware
 from app.agent.llm_registry import LLMRegistry
 from app.config.logger import get_trace_id
 from app.tools.assistant_tools import ALL_TOOLS
@@ -22,26 +22,26 @@ from app.tools.assistant_tools import ALL_TOOLS
 logger = logging.getLogger(__name__)
 
 
-class GatewayAgentBuilder(BaseAgentBuilder):
+class ResilientAgentBuilder(BaseAgentBuilder):
     """
     Builds and compiles the gateway's LangGraph workflow.
 
     Args:
         llm_registry:  The populated LLMRegistry (all providers registered).
-        middleware:    GatewayAgentMiddleware instance for model resolution
+        middleware:    ResilientAgentMiddleware instance for model resolution
                        and tool call interception.
     """
 
     def __init__(
         self,
         llm_registry: LLMRegistry,
-        middleware: GatewayAgentMiddleware,
+        middleware: ResilientAgentMiddleware,
     ) -> None:
         self._registry = llm_registry
         self._middleware = middleware
         self._tools = ALL_TOOLS
         logger.info(
-            "GatewayAgentBuilder: initialising | tools=[%s]",
+            "ResilientAgentBuilder: initialising | tools=[%s]",
             ", ".join(t.name for t in self._tools),
         )
         super().__init__()  # calls _create_workflow() → sets self.workflow
@@ -117,5 +117,5 @@ class GatewayAgentBuilder(BaseAgentBuilder):
         graph.add_edge("tools", "agent")
 
         compiled = graph.compile()
-        logger.info("GatewayAgentBuilder: workflow compiled successfully")
+        logger.info("ResilientAgentBuilder: workflow compiled successfully")
         return compiled

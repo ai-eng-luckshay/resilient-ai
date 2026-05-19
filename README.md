@@ -142,9 +142,9 @@ Adding a new backend: create a subclass of `BaseProcessor`, register it in `proc
 
 ## LLM Providers & Failover
 
-The model catalog is a static Python dict in `app/agent/agent_util.py`. The env only selects which provider to prefer — no code changes needed to switch models.
+The model catalog is a static Python dict in `app/agent/config/provider_catalog.py`. The env only selects which provider to prefer — no code changes needed to switch models.
 
-### Model catalog (`agent_util.py`)
+### Model catalog (`provider_catalog.py`)
 
 | Key | Provider | Model |
 |---|---|---|
@@ -153,7 +153,7 @@ The model catalog is a static Python dict in `app/agent/agent_util.py`. The env 
 | `GEMINI_FLASH` | Google GenAI | `gemini-flash-latest` |
 | `GEMINI_25_FLASH` | Google GenAI | `gemini-2.5-flash` |
 
-To add a model: add one line to `llm_provider_map` in `agent_util.py`. To activate it: set `SELECTED_LLM_PROVIDER` to its key.
+To add a model: add one line to `llm_provider_map` in `provider_catalog.py`. To activate it: set `SELECTED_LLM_PROVIDER` to its key.
 
 ### Provider selection (`.env`)
 
@@ -176,7 +176,7 @@ Tools are bound to the LLM **at request time** inside `agent_node` — not when 
 
 **Current behaviour:** the four built-in tools (`calculate`, `get_weather`, `search_knowledge_base`, `summarize_text`) from `ALL_TOOLS` are bound on every call.
 
-**MCP extension point:** `GraphFlowState` carries an `llm_tools` field specifically for per-request tool injection. An MCP-aware implementation fetches the live tool manifest from MCP servers at request time, wraps each as a LangChain `@tool`, and passes them through state — `agent_node` then calls `llm.bind_tools(state["llm_tools"])` with the live set. No graph recompilation is needed; the extension is entirely local to `agent_node` in `gateway_agent_builder.py`.
+**MCP extension point:** `GraphFlowState` carries an `llm_tools` field specifically for per-request tool injection. An MCP-aware implementation fetches the live tool manifest from MCP servers at request time, wraps each as a LangChain `@tool`, and passes them through state — `agent_node` then calls `llm.bind_tools(state["llm_tools"])` with the live set. No graph recompilation is needed; the extension is entirely local to `agent_node` in `resilient_agent_builder.py`.
 
 ---
 
@@ -185,30 +185,69 @@ Tools are bound to the LLM **at request time** inside `agent_node` — not when 
 ```
 app/
 ├── agent/
-│   ├── agent_util.py           # Master LLM provider map
-│   ├── graph_builder.py        # GraphFlowState schema
-│   ├── gateway_agent_builder.py# LangGraph StateGraph + dynamic tool binding
-│   ├── base_agent_builder.py   # ABC for agent builders
-│   ├── llm_registry.py         # Multi-provider registry + failover chain
-│   ├── runner.py               # AgentRunner: invoke() + stream()
-│   ├── stream_processor.py     # NDJSON pipeline + sentence buffer
-│   ├── middleware/             # GatewayAgentMiddleware (model resolution + tool hooks)
-│   └── processors/             # Strategy pattern: LANGGRAPH | GOOGLE_ADK
+│   ├── config/
+│   │   └── provider_catalog.py     # Master LLM provider map (llm_provider_map)
+│   ├── graph/
+│   │   ├── state.py                # GraphFlowState TypedDict schema
+│   │   ├── base_builder.py         # ABC for agent builders
+│   │   ├── resilient_agent_builder.py      # LangGraph StateGraph + dynamic tool binding
+│   │   └── middleware.py           # ResilientAgentMiddleware (model resolution + tool hooks)
+│   ├── registry/
+│   │   └── llm_registry.py         # Multi-provider registry + failover chain
+│   ├── runner/
+│   │   ├── agent_runner.py         # AgentRunner: invoke() + stream()
+│   │   └── runner_manager.py       # Singleton lifecycle manager
+│   ├── streaming/
+│   │   ├── chunk.py                # _extract_text, _ndjson, sentence boundary regex
+│   │   └── stream_processor.py     # NDJSON pipeline + sentence buffer (BUFFERED / RAW)
+│   └── processors/
+│       ├── base_processor.py       # BaseProcessor ABC
+│       ├── langgraph_processor.py  # LangGraph backend (default, failover-aware)
+│       ├── google_adk_processor.py # Google ADK stub (extension point)
+│       └── processor_factory.py    # Strategy factory: AGENT_PROCESSOR env key
 ├── a2a/
-│   ├── server.py               # JSON-RPC 2.0 router (a2a-sdk 1.0.3)
-│   ├── executor.py             # A2A task → LangGraph stream bridge
-│   ├── context_store.py        # context_id → session_id binding (multi-turn)
-│   ├── task_store.py           # In-memory task state (Redis swap path)
-│   └── ui_helpers.py           # Pure result-extraction helpers (testable)
-├── tools/                      # 4 generic tools (calculate, weather, search, summarize)
-├── services/                   # Session store + chat history
-├── controllers/                # REST API routes
-├── middleware/                 # Logger + PII filter
-├── config/                     # Settings, logger, metrics
-├── models/                     # Pydantic schemas
-└── ui/                         # Streamlit dashboard
+│   ├── server.py                   # JSON-RPC 2.0 router (a2a-sdk 1.0.3)
+│   ├── executor.py                 # A2A task → LangGraph stream bridge
+│   ├── context_store.py            # context_id → session_id binding (multi-turn)
+│   ├── task_store.py               # In-memory task state (Redis swap path)
+│   └── ui_helpers.py               # Pure result-extraction helpers (testable, no Streamlit)
+├── api/
+│   ├── v1/
+│   │   ├── chat_router.py          # POST /v1/stream, /v1/chat, /v1/session/init
+│   │   └── health_router.py        # GET /health, /metrics
+│   ├── middleware/
+│   │   ├── logging_middleware.py   # Structured request/response logging
+│   │   └── pii_filter.py           # PII scrubbing before log write
+│   └── router.py                   # Root FastAPI app + route registration
+├── repositories/
+│   ├── base/
+│   │   ├── session_repository.py   # ISessionRepository ABC
+│   │   └── context_repository.py  # IContextRepository ABC
+│   ├── memory/
+│   │   ├── session_repository.py   # In-memory SessionStore (TTL via time.time())
+│   │   └── context_repository.py  # In-memory ContextStore
+│   └── redis/
+│       ├── session_repository.py   # Redis-backed session store
+│       ├── context_repository.py   # Redis-backed context store
+│       └── task_repository.py      # Redis-backed task store
+├── tools/
+│   ├── tool_registry.py            # ALL_TOOLS list — single source of truth
+│   ├── calculate_tool.py           # Safe AST expression evaluator
+│   ├── weather_tool.py             # Mock weather data (5 cities)
+│   ├── knowledge_base_tool.py      # Mock knowledge base search
+│   └── summarize_tool.py           # First-two-sentences extractor
+├── services/
+│   └── chat_service.py             # ChatService: load_history + save_turn
+├── config/
+│   ├── settings.py                 # Pydantic BaseSettings
+│   ├── logging_config.py           # Rotating hourly log setup
+│   └── metrics.py                  # In-process metrics counters
+├── models/
+│   └── schemas.py                  # Pydantic request/response schemas
+└── ui/
+    └── streamlit_app.py            # Chat, A2A Inspector, Monitoring tabs
 tests/
-└── unit/                       # Unit tests (stream processor, registry, session, A2A)
+└── unit/                           # 64 unit tests — stream processor, registry, session, A2A
 ```
 
 ---

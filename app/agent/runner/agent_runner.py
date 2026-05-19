@@ -45,7 +45,7 @@ class AgentRunner:
             ("updates",  {node_name: state_delta})
 
         StreamProcessor handles both shapes.  provider_key is written into
-        state["model"] so GatewayAgentMiddleware resolves the right LLM
+        state["model"] so ResilientAgentMiddleware resolves the right LLM
         inside the workflow.
         """
         state = self._build_state(history, user_message, provider_key, context)

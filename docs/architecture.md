@@ -2,9 +2,9 @@
 
 ## LLM Provider Registry
 
-The master model catalog lives in code (`app/agent/agent_util.py`). The environment only selects which subset is active.
+The master model catalog lives in code (`app/agent/config/provider_catalog.py`). The environment only selects which subset is active.
 
-### Model catalog (`agent_util.py`)
+### Model catalog (`provider_catalog.py`)
 
 ```python
 llm_provider_map = {
@@ -22,7 +22,7 @@ Value format: `PREFIX_model-name`. The prefix encodes the client SDK:
 | `O` | `ChatOpenAI` | `OPENAI_API_KEY` |
 | `GG` | `ChatGoogleGenerativeAI` | `GEMINI_API_KEY` |
 
-To add a model: add one line to `llm_provider_map`. To activate it: set `SELECTED_LLM_PROVIDER` to its key in `.env`.
+To add a model: add one line to `llm_provider_map` in `provider_catalog.py`. To activate it: set `SELECTED_LLM_PROVIDER` to its key in `.env`.
 
 ### `.env` (preferred provider only)
 
@@ -53,7 +53,7 @@ On any LLM error, `LangGraphProcessor` catches the exception, emits a `FAILOVER`
 Tools are bound to the LLM **inside `agent_node`, at request time** — not when the graph is compiled at startup:
 
 ```python
-# gateway_agent_builder.py — runs per-request
+# app/agent/graph/resilient_agent_builder.py — runs per-request
 async def agent_node(state: GraphFlowState) -> dict:
     llm = middleware.resolve_model(state)      # model resolved per-request
     llm_with_tools = llm.bind_tools(tools)    # tools bound per-request
@@ -63,7 +63,7 @@ async def agent_node(state: GraphFlowState) -> dict:
 
 The `StateGraph` topology is compiled once at startup and never changes. The tool set is the only variable — a fresh binding on every call.
 
-**Current behaviour:** `agent_node` uses the static `ALL_TOOLS` list from `app/tools/assistant_tools.py`. The four built-in tools (`calculate`, `get_weather`, `search_knowledge_base`, `summarize_text`) are bound on every request.
+**Current behaviour:** `agent_node` uses the static `ALL_TOOLS` list from `app/tools/tool_registry.py`. The four built-in tools (`calculate`, `get_weather`, `search_knowledge_base`, `summarize_text`) are bound on every request.
 
 **MCP extension point:** `GraphFlowState` reserves an `llm_tools` field for per-request tool injection:
 
@@ -73,7 +73,7 @@ class GraphFlowState(TypedDict):
     llm_tools: list[Any]   # injection point — replace ALL_TOOLS with MCP-fetched tools
 ```
 
-MCP integration is designed to plug in here. An MCP-aware implementation fetches the live tool manifest from one or more MCP servers at request time (or from a per-session cache), wraps each entry as a LangChain `@tool`, and populates `state["llm_tools"]`. `agent_node` then calls `llm.bind_tools(state["llm_tools"])` with the live set instead of the static list. Because binding happens inside the node — not at compile time — **zero graph recompilation is required**. The change is entirely local to `agent_node` in `gateway_agent_builder.py`.
+MCP integration is designed to plug in here. An MCP-aware implementation fetches the live tool manifest from one or more MCP servers at request time (or from a per-session cache), wraps each entry as a LangChain `@tool`, and populates `state["llm_tools"]`. `agent_node` then calls `llm.bind_tools(state["llm_tools"])` with the live set instead of the static list. Because binding happens inside the node — not at compile time — **zero graph recompilation is required**. The change is entirely local to `agent_node` in `app/agent/graph/resilient_agent_builder.py`.
 
 ---
 
@@ -82,11 +82,11 @@ MCP integration is designed to plug in here. An MCP-aware implementation fetches
 The agent stack is structured as a builder hierarchy:
 
 ```
-BaseAgentBuilder (ABC)
-    └── GatewayAgentBuilder
-            ├── GatewayAgentMiddleware   ← injected
-            ├── LLMRegistry              ← injected
-            └── StateGraph (compiled once at startup)
+app/agent/graph/base_builder.py    → BaseAgentBuilder (ABC)
+app/agent/graph/resilient_agent_builder.py → ResilientAgentBuilder
+    ├── ResilientAgentMiddleware  (app/agent/graph/middleware.py)  ← injected
+    ├── LLMRegistry             (app/agent/registry/llm_registry.py) ← injected
+    └── StateGraph (compiled once at startup)
 ```
 
 ### Why compile once
@@ -97,18 +97,19 @@ In the original design, a separate graph was compiled per provider key (`_get_co
 
 ```
 app startup
-  └── AgentRunnerManager.initialize()
-          ├── get_llm_registry()           (already populated)
-          ├── GatewayAgentMiddleware(registry)
-          ├── GatewayAgentBuilder(registry, middleware)
-          │       └── _create_workflow()   (compiles StateGraph, logs ASCII graph)
-          └── AgentRunner(builder)         → stored as singleton
+  └── AgentRunnerManager.initialize()          (app/agent/runner/runner_manager.py)
+          ├── get_llm_registry()               (app/agent/registry/llm_registry.py)
+          ├── ResilientAgentMiddleware(registry) (app/agent/graph/middleware.py)
+          ├── ResilientAgentBuilder(registry, middleware)
+          │       └── _create_workflow()       (compiles StateGraph, logs ASCII graph)
+          └── AgentRunner(builder)             (app/agent/runner/agent_runner.py)
+                  → stored as singleton
 
 request
   └── AgentRunnerManager.get_runner().stream(...)
 ```
 
-### GatewayAgentMiddleware
+### ResilientAgentMiddleware
 
 Injected into the workflow's `agent_node` and `tool_node` closures. Provides:
 
@@ -124,9 +125,11 @@ Three stores ship with in-memory implementations for the demo:
 
 | Store | Module | Purpose |
 |---|---|---|
-| `SessionStore` | `app/services/session_store.py` | Chat history + system prompt per session |
-| `ContextStore` | `app/a2a/context_store.py` | A2A `context_id → session_id` binding |
+| `SessionStore` | `app/repositories/memory/session_repository.py` | Chat history + system prompt per session |
+| `ContextStore` | `app/repositories/memory/context_repository.py` | A2A `context_id → session_id` binding |
 | `InMemoryTaskStore` | `app/a2a/task_store.py` | A2A task state + artifacts |
+
+Each store implements an ABC from `app/repositories/base/` — swapping in the Redis variant requires only changing the factory return value.
 
 ### Why in-memory is fine for a single process
 
@@ -144,9 +147,15 @@ Zero external dependencies. O(1) access. TTL managed manually via `time.time()` 
 
 ### Swap path
 
-Set `USE_REDIS=true` and `REDIS_URL=redis://...` in `.env`. Each store factory (`get_session_store`, `get_context_store`, `get_task_store`) checks this flag and returns the Redis-backed class from `app/infra/redis_store.py`. No other code changes.
+Set `USE_REDIS=true` and `REDIS_URL=redis://...` in `.env`. Each store factory (`get_session_store`, `get_context_store`, `get_task_store`) checks this flag and returns the Redis-backed class from `app/repositories/redis/`. No other code changes.
 
-To activate, install `redis>=5.0` (add to `requirements.in`, run `pip-compile` + `pip-sync`) and remove the `NotImplementedError` guard in `app/infra/redis_store.py::_get_redis_client`.
+To activate, install `redis>=5.0` (add to `requirements.in`, run `pip-compile` + `pip-sync`). The Redis implementations live in:
+
+| Store | Redis module |
+|---|---|
+| SessionStore | `app/repositories/redis/session_repository.py` |
+| ContextStore | `app/repositories/redis/context_repository.py` |
+| TaskStore | `app/repositories/redis/task_repository.py` |
 
 ### Redis key schema
 
@@ -318,6 +327,6 @@ ProcessorFactory
   └── GOOGLE_ADK → GoogleADKProcessor   (extension stub)
 ```
 
-Adding a new backend: subclass `BaseProcessor`, implement `stream()`, register in `processor_factory.py`. Zero other changes — callers use the factory and are unaware of the concrete type.
+Adding a new backend: subclass `BaseProcessor` (`app/agent/processors/base_processor.py`), implement `stream()`, register in `app/agent/processors/processor_factory.py`. Zero other changes — callers use the factory and are unaware of the concrete type.
 
 The A2A surface (`/agent/a2a/...`) uses `LangGraphProcessor` directly — same workflow, different protocol layer. This is the zero-duplication point: one compiled LangGraph graph serves both REST and A2A.

@@ -32,18 +32,18 @@ class AgentRunnerManager:
 
         Execution order:
           1. Fetch populated LLMRegistry (providers already registered)
-          2. Create GatewayAgentMiddleware (model resolver + tool hooks)
-          3. Create GatewayAgentBuilder  (compiles StateGraph, logs ASCII graph)
+          2. Create ResilientAgentMiddleware (model resolver + tool hooks)
+          3. Create ResilientAgentBuilder  (compiles StateGraph, logs ASCII graph)
           4. Wrap in AgentRunner and store
         """
         from app.agent.registry.llm_registry import get_llm_registry
-        from app.agent.graph.middleware import GatewayAgentMiddleware
-        from app.agent.graph.gateway_builder import GatewayAgentBuilder
+        from app.agent.graph.middleware import ResilientAgentMiddleware
+        from app.agent.graph.resilient_agent_builder import ResilientAgentBuilder
 
         logger.info("AgentRunnerManager: initialising agent stack…")
         registry = get_llm_registry()
-        middleware = GatewayAgentMiddleware(registry)
-        builder = GatewayAgentBuilder(registry, middleware)
+        middleware = ResilientAgentMiddleware(registry)
+        builder = ResilientAgentBuilder(registry, middleware)
         cls._runner = AgentRunner(builder)
         logger.info("AgentRunnerManager: ready")
 

@@ -4,7 +4,7 @@ GraphFlowState — the shared state schema threaded through the LangGraph workfl
 Kept in its own module so it can be imported by the builder, runner, tools,
 and tests without pulling in graph-construction dependencies.
 
-Graph construction lives in GatewayAgentBuilder._create_workflow().
+Graph construction lives in ResilientAgentBuilder._create_workflow().
 """
 from typing import Annotated, Any
 
@@ -20,7 +20,7 @@ class GraphFlowState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
 
     # LLM provider key for this request (e.g. "GPT4O_MINI", "GEMINI_FLASH").
-    # GatewayAgentMiddleware.resolve_model() reads this at node execution time
+    # ResilientAgentMiddleware.resolve_model() reads this at node execution time
     # to return the right BaseChatModel — enabling per-request model switching
     # and failover without recompiling the graph.
     model: str
