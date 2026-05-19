@@ -8,7 +8,7 @@ The master model catalog lives in code (`app/agent/agent_util.py`). The environm
 
 ```python
 llm_provider_map = {
-    "GEMINI_31_FLASH_LITE": "GG_gemini-3.1-flash-lite-preview",
+    "GEMINI_31_FLASH_LITE": "GG_gemini-3.1-flash-lite",  # default — thinking model, tools work via thought_signature round-trip in langchain-google-genai 3.x
     "GPT4O_MINI":           "O_gpt-4o-mini",
     "GEMINI_FLASH":         "GG_gemini-flash-latest",
     "GEMINI_25_FLASH":      "GG_gemini-2.5-flash",
@@ -22,7 +22,7 @@ Value format: `PREFIX_model-name`. The prefix encodes the client SDK:
 | `O` | `ChatOpenAI` | `OPENAI_API_KEY` |
 | `GG` | `ChatGoogleGenerativeAI` | `GEMINI_API_KEY` |
 
-To add a model: add one line to `llm_provider_map`. To activate it: include its key in `LLM_PROVIDER_CHAIN` in `.env`.
+To add a model: add one line to `llm_provider_map`. To activate it: set `SELECTED_LLM_PROVIDER` to its key in `.env`.
 
 ### `.env` (preferred provider only)
 
@@ -137,6 +137,144 @@ Controlled by `STREAM_MODE` in `.env`.
 |---|---|---|---|
 | `BUFFERED` (default) | Accumulates tokens until a sentence boundary (`[.!?;\n—,]` followed by whitespace), then yields a complete sentence | ~1 sentence of additional latency | Voice / IVR consumers that need grammatically complete phrases |
 | `RAW` | Yields every token immediately as it arrives from the LLM | Minimum | Chat UI clients |
+
+### Observability difference: streaming vs non-streaming
+
+The two chat endpoints (`POST /v1/stream` and `POST /v1/chat`) use the same `LangGraphProcessor` internally, but they differ significantly in what is surfaced to the caller.
+
+**Failover events**
+
+| Endpoint | How failover is visible |
+|---|---|
+| `POST /v1/stream` | A `FAILOVER` SSE chunk is emitted in the event stream the moment the active provider is switched. The Streamlit Chat tab renders this as a yellow **⚡ Failover: Switched to \<provider\>** badge inline in the conversation. |
+| `POST /v1/chat` | The final JSON response contains only the successful reply — no indication that a failover occurred. To confirm whether failover happened, inspect the structured logs (`logs/…/gateway_SYSTEM_*.log`) and look for `FAILOVER:` entries tagged with the request's `trace_id`. |
+
+**Tool call results**
+
+| Endpoint | How tool calls are visible |
+|---|---|
+| `POST /v1/stream` | A `TOOL_RESULT` SSE chunk is emitted for every tool invocation as it completes. The Streamlit Chat tab renders each result as an expandable **🛠 Tool Calls** card in the right-hand column, showing the tool name and output. |
+| `POST /v1/chat` | Only the final assistant reply is returned. Tool calls happen internally but their inputs and outputs are not included in the response body. To inspect tool activity, check the structured logs (`gateway_SYSTEM_*.log`) for `→ ToolNode` / `← ToolNode` entries, or the Monitoring tab's **Tool Calls by Tool** chart. |
+
+This is an intentional design tradeoff: the non-streaming endpoint is simpler for integrations that only need the final answer; the streaming endpoint is richer for interactive clients and observability.
+
+---
+
+## A2A Protocol — `a2a-sdk 1.0.3`
+
+The A2A surface (`app/a2a/`) uses the official **`a2a-sdk 1.0.3`** package. The SDK handles JSON-RPC 2.0 dispatching, task lifecycle management, and the event queue — the project code implements only the agent-specific logic.
+
+### Endpoint layout
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/agent/a2a` | Agent card — capability descriptor for peer agent discovery |
+| `POST` | `/agent/a2a` | JSON-RPC 2.0 dispatcher (`message/send`, `tasks/get`, `tasks/cancel`) |
+
+### Component roles
+
+| File | Role |
+|---|---|
+| `app/a2a/server.py` | Builds `JsonRpcDispatcher` + `DefaultRequestHandlerV2`; serves agent card and POST dispatcher |
+| `app/a2a/executor.py` | `ResilientAgentExecutor(AgentExecutor)` — bridges A2A tasks to `LangGraphProcessor` |
+| `app/a2a/context_store.py` | `context_id → session_id` binding — survives multi-turn A2A conversations |
+| `app/a2a/task_store.py` | Custom `InMemoryTaskStore` kept for the Redis swap path; SDK's `InMemoryTaskStore` is used by default |
+
+### SDK integration pattern
+
+```python
+# server.py — lazy singleton dispatcher
+from a2a.server.request_handlers import DefaultRequestHandlerV2
+from a2a.server.routes.jsonrpc_dispatcher import JsonRpcDispatcher
+from a2a.server.tasks.in_memory_task_store import InMemoryTaskStore
+from a2a.types import AgentCard
+from google.protobuf.json_format import ParseDict
+
+handler = DefaultRequestHandlerV2(
+    agent_executor=ResilientAgentExecutor(),
+    task_store=InMemoryTaskStore(),
+    agent_card=ParseDict(agent_card_dict, AgentCard()),
+)
+dispatcher = JsonRpcDispatcher(
+    request_handler=handler,
+    context_builder=DefaultServerCallContextBuilder(),
+)
+```
+
+### Executor pattern (`ResilientAgentExecutor`)
+
+```python
+class ResilientAgentExecutor(AgentExecutor):
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        # 1. Enqueue Task proto first — SDK invariant
+        await event_queue.enqueue_event(Task(id=task_id, ...))
+
+        updater = TaskUpdater(event_queue, task_id, context_id)
+        user_message = context.get_user_input()
+
+        # 2. Provider selection: SELECTED_LLM_PROVIDER from .env seeds the chain.
+        #    LangGraphProcessor builds the full failover chain at runtime:
+        #      chain = [preferred] + [remaining registered providers in map order]
+        #    On any LLM error, the next provider is tried automatically.
+        preferred_provider = settings.selected_llm_provider
+        request = ChatRequest(model=preferred_provider, ...)
+
+        # 3. Stream LangGraphProcessor — same pipeline as REST /stream
+        async for chunk in processor.stream(request, history):
+            if chunk["type"] == "TEXT":
+                await updater.add_artifact(
+                    parts=[Part(text=chunk["content"])],
+                    artifact_id=artifact_id,
+                    append=not first_chunk,
+                    last_chunk=False,
+                )
+
+        await updater.complete()   # or updater.failed() on error
+```
+
+The `Task` proto **must** be enqueued before any `TaskStatusUpdateEvent`. This seeds the SDK's task store before the dispatcher processes response events.
+
+The failover chain is identical to the REST `/stream` endpoint — the A2A surface does not need its own failover logic; it inherits it by calling the same `LangGraphProcessor.stream()`.
+
+### JSON-RPC request format
+
+The a2a-sdk 1.0.3 uses gRPC-style method names and requires the `A2A-Version: 1.0` request header. Without the header the SDK version validator defaults to `0.3` and rejects the request.
+
+```
+POST /agent/a2a
+A2A-Version: 1.0
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "messageId": "<uuid>",
+      "role": "ROLE_USER",
+      "contextId": "<optional-uuid-for-multi-turn>",
+      "parts": [{"text": "What is 15 squared?"}]
+    }
+  }
+}
+```
+
+To poll for results: `method: "GetTask"`, `params: {"id": "<task-id>"}`.
+
+Reusing the same `contextId` routes each task to the same chat session, preserving conversation history across multiple A2A calls.
+
+### Dual-surface zero-duplication point
+
+The A2A surface and the REST surface share the same compiled LangGraph graph:
+
+```
+POST /v1/stream  ──┐
+                   ├── LangGraphProcessor.stream() ── compiled StateGraph
+POST /agent/a2a  ──┘   (same graph, same tools, same failover chain)
+```
+
+`ResilientAgentExecutor` calls `processor.stream()` exactly as the REST controller does — no duplicated agent logic.
 
 ---
 

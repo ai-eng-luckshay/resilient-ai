@@ -56,7 +56,6 @@ def _build_providers() -> dict[str, BaseChatModel]:
                     model=model_name,
                     google_api_key=settings.gemini_api_key,
                     temperature=0.2,
-                    thinking_budget=0,
                 )
                 logger.info(
                     "Registered Google provider: %s → %s | key=...%s",

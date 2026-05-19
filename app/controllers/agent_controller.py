@@ -18,6 +18,7 @@ from app.models.schemas import (
     ChatRequest,
     SessionInitRequest,
     SessionInitResponse,
+    SessionListResponse,
 )
 from app.services.chat_service import ChatService
 
@@ -31,6 +32,29 @@ async def init_session(body: SessionInitRequest, request: Request) -> SessionIni
     session_id = _chat_service.create_session(system_prompt=body.system_prompt)
     logger.info("[%s] Session init: %s", get_trace_id(), session_id)
     return SessionInitResponse(session_id=session_id)
+
+
+@router.get("/sessions", response_model=SessionListResponse)
+async def list_sessions() -> SessionListResponse:
+    sessions = _chat_service.list_sessions()
+    return SessionListResponse(sessions=sessions, total=len(sessions))
+
+
+@router.get("/session/{session_id}/history")
+async def get_session_history(session_id: str) -> dict:
+    if not _chat_service.session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+    history = _chat_service.get_display_history(session_id)
+    return {"session_id": session_id, "history": history}
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str) -> dict:
+    if not _chat_service.session_exists(session_id):
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+    _chat_service.delete_session(session_id)
+    logger.info("[%s] Session deleted via API: %s", get_trace_id(), session_id)
+    return {"deleted": session_id}
 
 
 @router.post("/stream")

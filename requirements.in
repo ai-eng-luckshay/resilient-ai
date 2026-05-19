@@ -12,14 +12,16 @@ uvicorn[standard]==0.47.0
 starlette==0.46.2
 
 # LLM orchestration
-langchain==0.3.30
-langchain-core==0.3.86
-langchain-openai==0.3.35
-langgraph==1.0.1
+langchain==1.3.1
+langchain-core==1.4.0
+langchain-openai==1.2.1
+langgraph==1.2.0
 
 # LLM providers
-openai==1.109.1
-langchain-google-genai==2.1.12   # optional — Gemini failover
+openai==2.37.0
+# langchain-google-genai 3.x adds full thought_signature round-tripping,
+# required for gemini-3.1-flash-lite (thinking model) to work with tools.
+langchain-google-genai==3.2.0
 
 # Validation & settings
 pydantic==2.13.4
@@ -30,6 +32,15 @@ httpx==0.28.1
 
 # Streamlit dashboard
 streamlit==1.57.0
+
+# A2A protocol (Agent-to-Agent)
+# Note: use core a2a-sdk only (no [http-server] extra) — we bring our own FastAPI/Starlette.
+# sse-starlette 2.x is the last series compatible with starlette 0.46.x.
+# protobuf is NOT hard-pinned here: langchain-google-genai → grpcio-status requires >=6.31.1,
+# while a2a-sdk requires <7,>=5.29.5.  The compatible range is 6.31.1 ≤ protobuf < 7.
+# pip-compile resolves this automatically when left unpinned.
+a2a-sdk==1.0.3
+sse-starlette==2.4.1
 
 # Utilities
 python-dotenv==1.2.2

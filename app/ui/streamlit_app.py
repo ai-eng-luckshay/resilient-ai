@@ -102,6 +102,56 @@ def _init_session(system_prompt: str) -> str | None:
         return None
 
 
+def _list_sessions() -> list[dict]:
+    try:
+        r = httpx.get(_api("/v1/sessions"), timeout=3)
+        return r.json().get("sessions", [])
+    except Exception:
+        return []
+
+
+def _fetch_session_history(session_id: str) -> list[dict]:
+    """Load chat history from the backend for a given session.
+
+    Returns a list of {"role": "user"|"assistant", "content": "..."} dicts
+    ready to drop into st.session_state["messages"].
+    """
+    try:
+        r = httpx.get(_api(f"/v1/session/{session_id}/history"), timeout=3)
+        if r.status_code == 200:
+            return r.json().get("history", [])
+    except Exception:
+        pass
+    return []
+
+
+def _delete_session(session_id: str) -> bool:
+    try:
+        r = httpx.delete(_api(f"/v1/session/{session_id}"), timeout=3)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _rel_time(ts: float) -> str:
+    """Human-readable relative timestamp — e.g. 'just now', '4m ago', '2h ago'."""
+    diff = time.time() - ts
+    if diff < 60:
+        return "just now"
+    if diff < 3600:
+        return f"{int(diff / 60)}m ago"
+    return f"{int(diff / 3600)}h ago"
+
+
+def _turn_count(message_count: int) -> str:
+    """Convert raw history length to user-facing turn count.
+    History layout: [SystemMessage?, HumanMessage, AIMessage, HumanMessage, AIMessage, ...]
+    Each turn adds 2 messages; the optional system prompt adds 1.
+    """
+    turns = message_count // 2  # floor — ignores system message
+    return f"{turns} turn{'s' if turns != 1 else ''}"
+
+
 # ── Sidebar ────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -113,10 +163,12 @@ with st.sidebar:
     st.markdown("**API Status:** " + health_label)
 
     st.divider()
+
+    # ── Configuration ──────────────────────────────────────────────────────
     st.subheader("Configuration")
 
     system_prompt = st.text_area(
-        "System Prompt",
+        "System Prompt (for new sessions)",
         value="You are a helpful AI assistant. Use available tools when relevant.",
         height=80,
     )
@@ -136,16 +188,74 @@ with st.sidebar:
         )
 
     st.divider()
-    st.caption("Available tools: calculate · search_knowledge_base · get_weather · summarize_text")
+
+    # ── Sessions Panel ─────────────────────────────────────────────────────
+    sessions = _list_sessions()
+    current_sid = st.session_state.get("session_id")
+
+    header_col, new_col = st.columns([3, 2])
+    with header_col:
+        st.subheader(f"Sessions ({len(sessions)})")
+    with new_col:
+        st.write("")  # vertical alignment nudge
+        if st.button("➕ New", use_container_width=True, key="new_session_btn"):
+            sid = _init_session(system_prompt)
+            if sid:
+                st.session_state["session_id"] = sid
+                st.session_state["messages"] = []
+                st.session_state["tool_calls"] = []
+                st.rerun()
+
+    if not sessions:
+        st.caption("No active sessions yet.")
+    else:
+        for sess in sessions:
+            sid = sess["session_id"]
+            is_active = sid == current_sid
+            turns_label = _turn_count(sess["message_count"])
+            age_label = _rel_time(sess["last_accessed"])
+            label = f"{'▶  ' if is_active else ''}{sid[:8]}  ·  {turns_label}  ·  {age_label}"
+
+            col_item, col_del = st.columns([8, 1])
+            with col_item:
+                if st.button(
+                    label,
+                    key=f"sess_{sid}",
+                    use_container_width=True,
+                    type="primary" if is_active else "secondary",
+                    help=f"Full ID: {sid}\nSystem prompt: {sess['system_prompt'][:80] or '(none)'}",
+                ):
+                    if not is_active:
+                        st.session_state["session_id"] = sid
+                        st.session_state["messages"] = _fetch_session_history(sid)
+                        st.session_state["tool_calls"] = []
+                        st.rerun()
+            with col_del:
+                if st.button("🗑", key=f"del_{sid}", help="Delete session"):
+                    ok = _delete_session(sid)
+                    if ok and is_active:
+                        new_sid = _init_session(system_prompt)
+                        st.session_state["session_id"] = new_sid
+                        st.session_state["messages"] = []
+                        st.session_state["tool_calls"] = []
+                    st.rerun()
+
+    st.divider()
+    st.caption("Tools: calculate · search_knowledge_base · get_weather · summarize_text")
 
 
 # ── Session State Init ─────────────────────────────────────────────────────
 
 if "session_id" not in st.session_state:
+    # Brand-new browser session — create a fresh backend session
     sid = _init_session(system_prompt)
     st.session_state["session_id"] = sid
     st.session_state["messages"] = []
     st.session_state["tool_calls"] = []
+elif "messages" not in st.session_state:
+    # session_id exists but messages were wiped (e.g. hot-reload) — restore from backend
+    st.session_state["messages"] = _fetch_session_history(st.session_state["session_id"])
+    st.session_state.setdefault("tool_calls", [])
 
 
 # ── Tabs ───────────────────────────────────────────────────────────────────
@@ -235,7 +345,7 @@ with tab_chat:
                                 ccontent = chunk.get("content", "")
 
                                 if ctype == "TEXT":
-                                    collected_text.append(ccontent)
+                                    collected_text.append(ccontent + " ")
                                     # Update placeholder in real time — user sees text appear
                                     stream_placeholder.markdown(
                                         "**Assistant:** " + "".join(collected_text) + " ▌"
@@ -301,41 +411,71 @@ with tab_chat:
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 2 — A2A INSPECTOR
 # ═══════════════════════════════════════════════════════════════════════════
+def _a2a_extract_text(task_result: dict) -> str:
+    """Extract full reply text from an A2A SDK task result dict."""
+    parts_text: list[str] = []
+    for artifact in task_result.get("artifacts", []):
+        for part in artifact.get("parts", []):
+            if isinstance(part, dict):
+                # SDK format: {"text": "..."} or {"text": {"text": "..."}}
+                text_val = part.get("text", "")
+                if isinstance(text_val, dict):
+                    text_val = text_val.get("text", "")
+                if text_val:
+                    parts_text.append(str(text_val))
+    return " ".join(parts_text).strip()
+
+
+def _a2a_state_badge(state_raw: str) -> tuple[str, str]:
+    """Return (emoji, normalised_label) for a task state string."""
+    # SDK emits 'TASK_STATE_COMPLETED' etc.; normalise for display
+    s = state_raw.lower().replace("task_state_", "")
+    emoji = {"completed": "🟢", "working": "🟡", "failed": "🔴"}.get(s, "⚪")
+    return emoji, s.upper()
+
+
 with tab_a2a:
     st.subheader("🔗 A2A Protocol Inspector")
     st.caption(
-        "Send Agent-to-Agent JSON-RPC 2.0 tasks directly. "
-        "This demonstrates the same agent logic serving a machine-to-machine protocol."
+        "Send Agent-to-Agent JSON-RPC 2.0 tasks using the official **a2a-sdk 1.0.3**. "
+        "The same LangGraph pipeline that serves the Chat tab drives every A2A task — "
+        "one agent, two protocols."
     )
 
     col_a, col_b = st.columns(2)
 
     with col_a:
-        st.markdown("**Send Task**")
+        st.markdown("**Send Task** (`message/send`)")
         a2a_context = st.text_input("Context ID (leave blank for new)", value="")
         a2a_message = st.text_input("Message", value="What is 15 squared?")
-        st.caption("Model is selected automatically by the gateway (with failover).")
+        st.caption(
+            "Reuse the same Context ID across sends to continue a multi-turn conversation."
+        )
 
         if st.button("🚀 Send A2A Task"):
             context_id = a2a_context.strip() or str(uuid.uuid4())
             payload = {
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "tasks/send",
+                "method": "SendMessage",
                 "params": {
-                    "contextId": context_id,
                     "message": {
-                        "role": "user",
-                        "parts": [{"type": "text", "text": a2a_message}],
+                        "messageId": str(uuid.uuid4()),
+                        "role": "ROLE_USER",
+                        "contextId": context_id,
+                        "parts": [{"text": a2a_message}],
                     },
                 },
             }
+            # A2A-Version header is required by the SDK's version validator.
+            # Without it the server defaults to v0.3 and rejects the request.
+            a2a_headers = {"A2A-Version": "1.0"}
 
             st.markdown("**Request JSON:**")
             st.code(json.dumps(payload, indent=2), language="json")
 
             try:
-                resp = httpx.post(_api("/agent/a2a/tasks/send"), json=payload, timeout=30)
+                resp = httpx.post(_api("/agent/a2a"), json=payload, headers=a2a_headers, timeout=60)
                 result = resp.json()
                 st.session_state["last_a2a_result"] = result
                 st.session_state["last_a2a_context"] = context_id
@@ -347,42 +487,58 @@ with tab_a2a:
             st.json(result)
 
     with col_b:
-        st.markdown("**Task Artifacts**")
+        st.markdown("**Task Result**")
         last_result = st.session_state.get("last_a2a_result", {})
-        task_id = last_result.get("result", {}).get("id") if last_result else None
+        # SDK wraps the task under result.task for SendMessage responses.
+        # GetTask returns the task directly under result.
+        _result_outer = last_result.get("result", {}) if last_result else {}
+        task_result = _result_outer.get("task", _result_outer) if _result_outer else {}
+        task_id = task_result.get("id") if task_result else None
 
         if task_id:
             st.caption(f"Task ID: `{task_id}`")
             st.caption(f"Context ID: `{st.session_state.get('last_a2a_context', '-')}`")
 
-            try:
-                poll_resp = httpx.get(_api(f"/agent/a2a/tasks/{task_id}"), timeout=5)
-                task_data = poll_resp.json()
-            except Exception as e:
-                task_data = {"error": str(e)}
-
-            state = task_data.get("status", {}).get("state", "unknown")
-            state_color = {"completed": "🟢", "working": "🟡", "failed": "🔴"}.get(state, "⚪")
-            st.markdown(f"**Status:** {state_color} {state.upper()}")
-
-            artifacts = task_data.get("artifacts", [])
-            if artifacts:
-                st.markdown("**Artifacts:**")
-                full_text = " ".join(a.get("text", "") for a in artifacts)
-                st.markdown(f"> {full_text}")
-            else:
-                st.caption("No artifacts yet.")
-
+            # Refresh: poll via JSON-RPC tasks/get
             if st.button("🔄 Refresh"):
+                poll_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "GetTask",
+                    "params": {"id": task_id},
+                }
+                try:
+                    poll_resp = httpx.post(
+                        _api("/agent/a2a"), json=poll_payload,
+                        headers={"A2A-Version": "1.0"}, timeout=10,
+                    )
+                    _polled_outer = poll_resp.json().get("result", {})
+                    # GetTask may wrap under "task" key or return task directly
+                    polled = _polled_outer.get("task", _polled_outer) if _polled_outer else task_result
+                    st.session_state["last_a2a_result"] = {"result": polled}
+                    task_result = polled
+                except Exception as e:
+                    st.warning(f"Poll failed: {e}")
                 st.rerun()
+
+            state_raw = task_result.get("status", {}).get("state", "unknown")
+            badge, label = _a2a_state_badge(state_raw)
+            st.markdown(f"**Status:** {badge} {label}")
+
+            reply_text = _a2a_extract_text(task_result)
+            if reply_text:
+                st.markdown("**Reply:**")
+                st.markdown(f"> {reply_text}")
+            else:
+                st.caption("No artifacts yet — try Refresh if the task is still working.")
         else:
-            st.caption("Send a task to see artifacts here.")
+            st.caption("Send a task to see results here.")
 
         st.divider()
-        st.markdown("**Agent Card**")
+        st.markdown("**Agent Card** (`GET /agent/a2a`)")
         if st.button("Fetch Agent Card"):
             try:
-                card_resp = httpx.get(_api("/agent/a2a/agent-card"), timeout=5)
+                card_resp = httpx.get(_api("/agent/a2a"), timeout=5)
                 st.json(card_resp.json())
             except Exception as e:
                 st.error(str(e))

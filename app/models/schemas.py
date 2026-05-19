@@ -26,6 +26,19 @@ class StreamChunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SessionListItem(BaseModel):
+    session_id: str
+    message_count: int
+    system_prompt: str
+    created_at: float
+    last_accessed: float
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionListItem]
+    total: int
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"] = "ok"
     version: str

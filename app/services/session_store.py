@@ -46,6 +46,22 @@ class SessionStore:
     def delete(self, session_id: str) -> None:
         self._store.pop(session_id, None)
 
+    def list_all(self) -> list[dict[str, Any]]:
+        """Return summary metadata for all non-expired sessions, sorted newest-first."""
+        now = time.time()
+        result = []
+        for sid, entry in list(self._store.items()):
+            if now - entry["created_at"] <= self._ttl:
+                result.append({
+                    "session_id": sid,
+                    "message_count": len(entry.get("history", [])),
+                    "system_prompt": entry.get("system_prompt", ""),
+                    "created_at": entry["created_at"],
+                    "last_accessed": entry["last_accessed"],
+                })
+        result.sort(key=lambda x: x["last_accessed"], reverse=True)
+        return result
+
     def active_count(self) -> int:
         now = time.time()
         return sum(

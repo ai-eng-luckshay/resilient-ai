@@ -71,3 +71,28 @@ class ChatService:
         if not exists:
             get_metrics().record_session_miss()
         return exists
+
+    def get_display_history(self, session_id: str) -> list[dict[str, str]]:
+        """Return chat history as plain dicts for UI consumption.
+
+        Skips SystemMessage — only user/assistant turns are included.
+        Each item: {"role": "user"|"assistant", "content": "..."}
+        """
+        entry = self._store.get(session_id)
+        if entry is None:
+            return []
+        result: list[dict[str, str]] = []
+        for msg in entry.get("history", []):
+            if isinstance(msg, HumanMessage):
+                result.append({"role": "user", "content": str(msg.content)})
+            elif isinstance(msg, AIMessage):
+                result.append({"role": "assistant", "content": str(msg.content)})
+            # SystemMessage intentionally skipped
+        return result
+
+    def list_sessions(self) -> list[dict]:
+        return self._store.list_all()
+
+    def delete_session(self, session_id: str) -> None:
+        self._store.delete(session_id)
+        logger.info("[%s] Session deleted: %s", get_trace_id(), session_id)
